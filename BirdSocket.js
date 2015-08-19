@@ -1,34 +1,39 @@
 var net = require('net');
 var q = require('q');
 
-var bird_SocketTimeout = 5000;
+var bird_SocketTimeout = 60000;
 var debug = false;
 
 BirdSocket = function(ipv) {
   me = this;
 
-  this.getRoutesBySession = function getRoutesBySession(ipv, session) {
+  this.getRoutesBySession = function getRoutesBySession(ipv,as,session) {
     var deferred = new q.defer();
 
     var socket = new net.Socket();
     socket.setTimeout(bird_SocketTimeout);
 
-    var routes = [];
+    var routesData = {
+      routes: [],
+    };
 
     socket.connect(me._script(ipv), function() {
-      var command = 'show route protocol '+session+' filter { if bgp_path.last=44194 && bgp_path.len=1 then accept; }\n';
+      var command = 'show route protocol '+session+' filter { if bgp_path.last='+as+' && bgp_path.len=1 then accept; }\n';
+      socket.write(command);
     });
 
     socket.on('data', function(data) {
+      me._debug('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>');
+      me._debug(ipv+' routes by session '+session+' for as '+as);
       var lines = new String(data).split('\n');
       for (var i=0;i<lines.length;i++) {
-        me._toRoutes(line[i], routes);
+        me._toRoutes(lines[i], routesData);
 
         //end of data is not send everytime >:(
         if (lines[i].indexOf('0000') > -1) {
           me._debug('resolved routes:');
-          me._debug(routes);
-          deferred.resolve(routes);
+          me._debug(routesData);
+          deferred.resolve(routesData);
           socket.destroy();
           me._debug('<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<');
         }
@@ -36,9 +41,12 @@ BirdSocket = function(ipv) {
     });
 
     socket.on('timeout', function() {
-      deferred.resolve(table);
+      deferred.resolve(routesData);
       socket.destroy();
     });
+
+    //TODO fail on socket error
+    return deferred.promise;
   }
 
   //prmomis to return routes announced by an as
@@ -48,7 +56,7 @@ BirdSocket = function(ipv) {
     var socket = new net.Socket();
     socket.setTimeout(bird_SocketTimeout);
 
-    var routes = [];
+    var routes = {routes:[]};
 
     //TODO fail on script is empty;
     socket.connect(me._script(ipv), function() {
@@ -90,11 +98,13 @@ BirdSocket = function(ipv) {
     return deferred.promise;
   }
 
-  this._toRoutes = function _toRoutes(line, routes) {
+  this._toRoutes = function _toRoutes(line, routesData) {
+    me._debug('>>> DEBUG to route');
     me._debug(line);
     //0001 is bird starting promt
     //0000 is end of data
-    if (line.indexOf('0001') == -1 && line.indexOf('0000') == -1) {
+    //9001 is some error code
+    if (line.indexOf('0001') == -1 && line.indexOf('0000') == -1 && line.indexOf('9001') == -1) {
       var splitted = line.split('via');
       var route = splitted[0].trim();
       if (route != '') {
@@ -102,9 +112,12 @@ BirdSocket = function(ipv) {
         if (route.indexOf('1007-') > -1) {
           route = route.substr(5);
         }
-        routes.push(route);
+        routesData.routes.push(route);
       }
+    } else if (line.indexOf('9001') > -1) {
+      routesData.error = 'session is not configured yet';
     }
+    me._debug('<<< DEBUG to route');
   }
 
 
